@@ -1,0 +1,376 @@
+import { useSession, signIn, signOut } from "next-auth/react";
+import { useState, useEffect, useRef } from "react";
+
+const GOAL = 2000000;
+const TABS = ["🏠 War Room", "📊 Analytics", "🎯 Goals", "💰 Finance", "🤝 Leads", "🤖 AI Assistant"];
+
+function fmt(n) {
+  if (n >= 100000) return "₹" + (n / 100000).toFixed(1) + "L";
+  if (n >= 1000) return "₹" + (n / 1000).toFixed(1) + "K";
+  return "₹" + n;
+}
+function num(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "K";
+  return String(n);
+}
+
+const defaultState = {
+  finance: { earned: 0, paid: 0 },
+  analytics: {
+    instagram: { followers: 0, reach: 0, views: 0 },
+    youtube: { subscribers: 0, views: 0, watchHours: 0 },
+    linkedin: { followers: 0, reach: 0, views: 0 },
+    facebook: { followers: 0, reach: 0, views: 0 },
+  },
+  leads: [],
+  goals: { monthly: "", weekly: "" },
+  tasks: [],
+};
+
+export default function Home() {
+  const { data: session, status } = useSession();
+  const [tab, setTab] = useState(0);
+  const [state, setState] = useState(defaultState);
+  const [newTask, setNewTask] = useState("");
+  const [newLead, setNewLead] = useState({ name: "", value: "", status: "Contacted" });
+  const [aiMessages, setAiMessages] = useState([
+    { role: "assistant", content: "Hey! I'm your anonymous AI assistant. Goal: ₹20 Lakh this year. Ask me anything — what to post, how to grow, what to do next. 💪" }
+  ]);
+  const [aiInput, setAiInput] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const chatRef = useRef(null);
+
+  // Load from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("p20l");
+      if (saved) setState(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  // Save to localStorage on change
+  useEffect(() => {
+    localStorage.setItem("p20l", JSON.stringify(state));
+  }, [state]);
+
+  useEffect(() => {
+    if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
+  }, [aiMessages]);
+
+  const { finance, analytics, leads, goals, tasks } = state;
+  const set = (key, val) => setState(s => ({ ...s, [key]: typeof val === "function" ? val(s[key]) : val }));
+
+  const pct = Math.min((finance.earned / GOAL) * 100, 100).toFixed(1);
+  const left = GOAL - finance.earned;
+  const due = finance.earned - finance.paid;
+  const monthsLeft = Math.max(1, 12 - new Date().getMonth());
+
+  async function sendAI() {
+    if (!aiInput.trim() || aiLoading) return;
+    const userMsg = aiInput.trim();
+    setAiInput("");
+    const newMessages = [...aiMessages, { role: "user", content: userMsg }];
+    setAiMessages(newMessages);
+    setAiLoading(true);
+    try {
+      const context = `You are a private AI business assistant for an anonymous creator targeting ₹20 Lakh this year.
+Stats: Earned ₹${finance.earned}, Paid ₹${finance.paid}, Left ₹${left}.
+Instagram: ${analytics.instagram.followers} followers, ${analytics.instagram.reach} reach.
+YouTube: ${analytics.youtube.subscribers} subs, ${analytics.youtube.views} views.
+LinkedIn: ${analytics.linkedin.followers} followers. Facebook: ${analytics.facebook.followers} followers.
+Active leads: ${leads.filter(l => l.status !== "Lost").length}. Tasks today: ${tasks.length}.
+Be concise, actionable, and motivating. User is anonymous and wants to grow fast.`;
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context,
+          messages: newMessages.filter((_, i) => i > 0).map(m => ({ role: m.role, content: m.content }))
+        }),
+      });
+      const data = await res.json();
+      setAiMessages(m => [...m, { role: "assistant", content: data.reply || "Error. Try again." }]);
+    } catch {
+      setAiMessages(m => [...m, { role: "assistant", content: "Connection error. Try again." }]);
+    }
+    setAiLoading(false);
+  }
+
+  function addTask() {
+    if (!newTask.trim()) return;
+    set("tasks", t => [...t, { id: Date.now(), text: newTask.trim(), done: false }]);
+    setNewTask("");
+  }
+  function toggleTask(id) {
+    set("tasks", t => t.map(x => x.id === id ? { ...x, done: !x.done } : x));
+  }
+  function addLead() {
+    if (!newLead.name.trim()) return;
+    set("leads", l => [...l, { ...newLead, id: Date.now(), value: Number(newLead.value) || 0 }]);
+    setNewLead({ name: "", value: "", status: "Contacted" });
+  }
+  function updateAnalytic(platform, field, value) {
+    set("analytics", a => ({ ...a, [platform]: { ...a[platform], [field]: Number(value) || 0 } }));
+  }
+
+  const statuses = ["Contacted", "Negotiating", "Closed", "Lost"];
+  const statusColor = { Contacted: "#3b82f6", Negotiating: "#f59e0b", Closed: "#10b981", Lost: "#ef4444" };
+
+  const s = { // common input style
+    bg: { background: "#1e1e3a", border: "1px solid #2d2d5a", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", outline: "none", width: "100%", boxSizing: "border-box" }
+  };
+
+  if (status === "loading") return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0f", color: "#a78bfa", fontSize: 18 }}>Loading...</div>
+  );
+
+  if (!session) return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#0a0a0f" }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>⚡</div>
+      <div style={{ fontSize: 28, fontWeight: 900, color: "#a78bfa", marginBottom: 8 }}>Project 20L</div>
+      <div style={{ color: "#64748b", marginBottom: 32, fontSize: 14 }}>Your anonymous creator command center</div>
+      <button onClick={() => signIn("google")} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
+        🔐 Sign in with Google
+      </button>
+      <div style={{ color: "#334155", fontSize: 12, marginTop: 16 }}>Only your account can access this</div>
+    </div>
+  );
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0a0a0f", color: "#e2e8f0", fontFamily: "'Inter',sans-serif", fontSize: 14 }}>
+      {/* Header */}
+      <div style={{ background: "#0f0f1a", borderBottom: "1px solid #1e1e3a", padding: "12px 20px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 18, color: "#a78bfa" }}>⚡ Project 20L</div>
+          <div style={{ fontSize: 11, color: "#64748b" }}>Anonymous Mode • {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" })}</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ fontSize: 11, color: "#94a3b8" }}>Goal Progress</div>
+            <div style={{ fontSize: 20, fontWeight: 800, color: "#a78bfa" }}>{pct}%</div>
+          </div>
+          <button onClick={() => signOut()} style={{ background: "#1e1e3a", border: "1px solid #2d2d5a", color: "#94a3b8", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12 }}>Sign Out</button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", overflowX: "auto", background: "#0f0f1a", borderBottom: "1px solid #1e1e3a" }}>
+        {TABS.map((t, i) => (
+          <button key={i} onClick={() => setTab(i)} style={{
+            padding: "10px 16px", border: "none", background: "none", cursor: "pointer", whiteSpace: "nowrap",
+            color: tab === i ? "#a78bfa" : "#64748b", borderBottom: tab === i ? "2px solid #a78bfa" : "2px solid transparent",
+            fontWeight: tab === i ? 700 : 400, fontSize: 13
+          }}>{t}</button>
+        ))}
+      </div>
+
+      <div style={{ padding: 20, maxWidth: 900, margin: "0 auto" }}>
+
+        {/* WAR ROOM */}
+        {tab === 0 && <>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ color: "#94a3b8", fontSize: 13 }}>₹20 Lakh Mission</span>
+              <span style={{ color: "#a78bfa", fontWeight: 700 }}>{fmt(finance.earned)} / ₹20L</span>
+            </div>
+            <div style={{ background: "#1e1e3a", borderRadius: 99, height: 12, marginBottom: 8 }}>
+              <div style={{ background: "linear-gradient(90deg,#7c3aed,#a78bfa)", width: pct + "%", height: "100%", borderRadius: 99, transition: "width 0.5s" }} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b" }}>
+              <span>Left: {fmt(left)}</span><span>Due from clients: {fmt(due)}</span>
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginBottom: 16 }}>
+            {[
+              { label: "Instagram", val: num(analytics.instagram.followers), icon: "📸", color: "#e1306c" },
+              { label: "YouTube Subs", val: num(analytics.youtube.subscribers), icon: "▶️", color: "#ff0000" },
+              { label: "LinkedIn", val: num(analytics.linkedin.followers), icon: "💼", color: "#0077b5" },
+              { label: "Facebook", val: num(analytics.facebook.followers), icon: "📘", color: "#1877f2" },
+              { label: "Total Earned", val: fmt(finance.earned), icon: "💰", color: "#10b981" },
+              { label: "Active Leads", val: leads.filter(l => l.status !== "Lost").length, icon: "🤝", color: "#f59e0b" },
+            ].map((s, i) => (
+              <div key={i} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 10, padding: "14px 16px" }}>
+                <div style={{ fontSize: 20 }}>{s.icon}</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: s.color, marginTop: 4 }}>{s.val}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontWeight: 700, marginBottom: 12, color: "#a78bfa" }}>📋 Today's Tasks</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <input value={newTask} onChange={e => setNewTask(e.target.value)} onKeyDown={e => e.key === "Enter" && addTask()} placeholder="Add a task..." style={{ ...s.bg, flex: 1 }} />
+              <button onClick={addTask} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontWeight: 600 }}>Add</button>
+            </div>
+            {tasks.length === 0 && <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 12 }}>No tasks yet!</div>}
+            {tasks.map(t => (
+              <div key={t.id} onClick={() => toggleTask(t.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", cursor: "pointer", borderBottom: "1px solid #1a1a2e" }}>
+                <div style={{ width: 18, height: 18, borderRadius: 4, border: "2px solid " + (t.done ? "#7c3aed" : "#475569"), background: t.done ? "#7c3aed" : "none", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {t.done && <span style={{ color: "#fff", fontSize: 11 }}>✓</span>}
+                </div>
+                <span style={{ color: t.done ? "#475569" : "#e2e8f0", textDecoration: t.done ? "line-through" : "none" }}>{t.text}</span>
+              </div>
+            ))}
+          </div>
+        </>}
+
+        {/* ANALYTICS */}
+        {tab === 1 && [
+          { key: "instagram", label: "Instagram", icon: "📸", color: "#e1306c", fields: ["followers", "reach", "views"] },
+          { key: "youtube", label: "YouTube", icon: "▶️", color: "#ff0000", fields: ["subscribers", "views", "watchHours"] },
+          { key: "linkedin", label: "LinkedIn", icon: "💼", color: "#0077b5", fields: ["followers", "reach", "views"] },
+          { key: "facebook", label: "Facebook", icon: "📘", color: "#1877f2", fields: ["followers", "reach", "views"] },
+        ].map(p => (
+          <div key={p.key} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, color: p.color, marginBottom: 12, fontSize: 15 }}>{p.icon} {p.label}</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+              {p.fields.map(f => (
+                <div key={f}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
+                  <input type="number" value={analytics[p.key][f]} onChange={e => updateAnalytic(p.key, f, e.target.value)} style={s.bg} />
+                  <div style={{ fontSize: 12, color: p.color, marginTop: 2, fontWeight: 700 }}>{num(analytics[p.key][f])}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {/* GOALS */}
+        {tab === 2 && <>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 20, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 4 }}>🎯 Annual Goal</div>
+            <div style={{ fontSize: 32, fontWeight: 900, color: "#10b981" }}>₹20,00,000</div>
+            <div style={{ marginTop: 8, fontSize: 13, color: "#94a3b8" }}>Monthly target: <span style={{ color: "#f59e0b", fontWeight: 700 }}>₹1,66,667</span> &nbsp;•&nbsp; Weekly: <span style={{ color: "#f59e0b", fontWeight: 700 }}>₹38,462</span></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+            {[["monthly", "📅 This Month's Goal"], ["weekly", "📆 This Week's Goal"]].map(([key, label]) => (
+              <div key={key} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8, color: "#a78bfa" }}>{label}</div>
+                <textarea value={goals[key]} onChange={e => set("goals", g => ({ ...g, [key]: e.target.value }))}
+                  placeholder="Write your goal..." rows={3}
+                  style={{ ...s.bg, resize: "none" }} />
+              </div>
+            ))}
+          </div>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 12 }}>📊 Quarterly Progress</div>
+            {[["Q1 Jan–Mar", 500000], ["Q2 Apr–Jun", 1000000], ["Q3 Jul–Sep", 1500000], ["Q4 Oct–Dec", 2000000]].map(([label, target]) => {
+              const p = Math.min((finance.earned / target) * 100, 100).toFixed(0);
+              return (
+                <div key={label} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>
+                    <span>{label}</span><span>{p}% of {fmt(target)}</span>
+                  </div>
+                  <div style={{ background: "#1e1e3a", borderRadius: 99, height: 8 }}>
+                    <div style={{ background: Number(p) >= 100 ? "#10b981" : "linear-gradient(90deg,#7c3aed,#a78bfa)", width: p + "%", height: "100%", borderRadius: 99 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>}
+
+        {/* FINANCE */}
+        {tab === 3 && <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 16 }}>
+            {[["Total Earned", fmt(finance.earned), "#10b981"], ["Total Paid", fmt(finance.paid), "#3b82f6"], ["Still Due", fmt(due), due > 0 ? "#f59e0b" : "#64748b"]].map(([label, val, color]) => (
+              <div key={label} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, textAlign: "center" }}>
+                <div style={{ fontSize: 24, fontWeight: 800, color }}>{val}</div>
+                <div style={{ fontSize: 12, color: "#64748b", marginTop: 4 }}>{label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 12 }}>✏️ Update Financials</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {[["Total Earned (₹)", "earned", "#10b981"], ["Total Paid Out (₹)", "paid", "#3b82f6"]].map(([label, key, color]) => (
+                <div key={key}>
+                  <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{label}</div>
+                  <input type="number" value={finance[key]} onChange={e => set("finance", f => ({ ...f, [key]: Number(e.target.value) || 0 }))}
+                    style={{ ...s.bg, color, fontSize: 16, fontWeight: 700 }} />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 8 }}>📈 To Hit ₹20L</div>
+            <div style={{ fontSize: 13, color: "#94a3b8", lineHeight: 2 }}>
+              Still need: <span style={{ color: "#f59e0b", fontWeight: 700 }}>{fmt(left)}</span><br />
+              Months left: <span style={{ color: "#a78bfa", fontWeight: 700 }}>{monthsLeft}</span><br />
+              Required/month: <span style={{ color: "#10b981", fontWeight: 700 }}>{fmt(Math.ceil(left / monthsLeft))}</span>
+            </div>
+          </div>
+        </>}
+
+        {/* LEADS */}
+        {tab === 4 && <>
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 12 }}>➕ Add New Lead</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "end" }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Name / Brand</div>
+                <input value={newLead.name} onChange={e => setNewLead(l => ({ ...l, name: e.target.value }))} placeholder="Brand XYZ" style={s.bg} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Value (₹)</div>
+                <input type="number" value={newLead.value} onChange={e => setNewLead(l => ({ ...l, value: e.target.value }))} placeholder="50000" style={{ ...s.bg, width: 100 }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Status</div>
+                <select value={newLead.status} onChange={e => setNewLead(l => ({ ...l, status: e.target.value }))} style={{ ...s.bg, width: "auto" }}>
+                  {statuses.map(s => <option key={s}>{s}</option>)}
+                </select>
+              </div>
+            </div>
+            <button onClick={addLead} style={{ marginTop: 10, background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "10px 20px", cursor: "pointer", fontWeight: 600, width: "100%" }}>Add Lead</button>
+          </div>
+          {leads.length === 0 && <div style={{ color: "#475569", textAlign: "center", padding: 32 }}>No leads yet. Start adding!</div>}
+          {leads.map(l => (
+            <div key={l.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 10, padding: "12px 16px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>{l.name}</div>
+                <div style={{ fontSize: 12, color: "#10b981" }}>{fmt(l.value)}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <select value={l.status} onChange={e => set("leads", ls => ls.map(x => x.id === l.id ? { ...x, status: e.target.value } : x))}
+                  style={{ background: "#1e1e3a", border: "1px solid #2d2d5a", borderRadius: 6, padding: "5px 8px", color: statusColor[l.status], outline: "none", fontSize: 12 }}>
+                  {statuses.map(s => <option key={s}>{s}</option>)}
+                </select>
+                <button onClick={() => set("leads", ls => ls.filter(x => x.id !== l.id))} style={{ background: "#1e1e3a", border: "none", color: "#ef4444", borderRadius: 6, padding: "5px 8px", cursor: "pointer" }}>✕</button>
+              </div>
+            </div>
+          ))}
+          {leads.length > 0 && (
+            <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 14, marginTop: 8, fontSize: 13, color: "#94a3b8" }}>
+              Pipeline: <span style={{ color: "#10b981", fontWeight: 700 }}>{fmt(leads.filter(l => l.status !== "Lost").reduce((a, l) => a + l.value, 0))}</span>
+              &nbsp;•&nbsp; Closed: <span style={{ color: "#a78bfa", fontWeight: 700 }}>{fmt(leads.filter(l => l.status === "Closed").reduce((a, l) => a + l.value, 0))}</span>
+            </div>
+          )}
+        </>}
+
+        {/* AI ASSISTANT */}
+        {tab === 5 && (
+          <div style={{ display: "flex", flexDirection: "column", height: "62vh" }}>
+            <div ref={chatRef} style={{ flex: 1, overflowY: "auto", marginBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              {aiMessages.map((m, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                  <div style={{ maxWidth: "80%", padding: "10px 14px", borderRadius: 12, fontSize: 13, lineHeight: 1.6, background: m.role === "user" ? "#7c3aed" : "#0f0f1a", border: m.role === "user" ? "none" : "1px solid #1e1e3a" }}>
+                    {m.content}
+                  </div>
+                </div>
+              ))}
+              {aiLoading && <div style={{ display: "flex" }}><div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: "10px 14px", color: "#a78bfa", fontSize: 13 }}>Thinking... 🤔</div></div>}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={aiInput} onChange={e => setAiInput(e.target.value)} onKeyDown={e => e.key === "Enter" && sendAI()}
+                placeholder="What to post next? How to grow faster? Ask anything..."
+                style={{ flex: 1, background: "#0f0f1a", border: "1px solid #2d2d5a", borderRadius: 10, padding: "12px 14px", color: "#e2e8f0", outline: "none", fontSize: 13 }} />
+              <button onClick={sendAI} disabled={aiLoading} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 10, padding: "12px 20px", cursor: "pointer", fontWeight: 700, opacity: aiLoading ? 0.6 : 1 }}>Send</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
