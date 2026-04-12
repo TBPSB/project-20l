@@ -18,8 +18,7 @@ function num(n) {
 const defaultState = {
   finance: { earned: 0, paid: 0 },
   analytics: {
-    instagram: { followers: 0, reach: 0, views: 0 },
-    youtube: { subscribers: 0, views: 0, watchHours: 0 },
+    accounts: [],
     linkedin: { followers: 0, reach: 0, views: 0 },
     facebook: { followers: 0, reach: 0, views: 0 },
   },
@@ -60,11 +59,32 @@ export default function Home() {
 
   const { finance, analytics, leads, goals, tasks } = state;
   const set = (key, val) => setState(s => ({ ...s, [key]: typeof val === "function" ? val(s[key]) : val }));
+  const [newAccount, setNewAccount] = useState({ platform: "instagram", nickname: "" });
 
   const pct = Math.min((finance.earned / GOAL) * 100, 100).toFixed(1);
   const left = GOAL - finance.earned;
   const due = finance.earned - finance.paid;
   const monthsLeft = Math.max(1, 12 - new Date().getMonth());
+
+  const accounts = analytics.accounts || [];
+  const igAccounts = accounts.filter(a => a.platform === "instagram");
+  const ytAccounts = accounts.filter(a => a.platform === "youtube");
+  const totalFollowers = (p) => accounts.filter(a => a.platform === p).reduce((s, a) => s + (a.followers || a.subscribers || 0), 0);
+
+  function addAccount() {
+    if (!newAccount.nickname.trim()) return;
+    const base = newAccount.platform === "youtube"
+      ? { subscribers: 0, views: 0, watchHours: 0 }
+      : { followers: 0, reach: 0, views: 0 };
+    set("analytics", a => ({ ...a, accounts: [...(a.accounts || []), { ...base, ...newAccount, id: Date.now() }] }));
+    setNewAccount(n => ({ ...n, nickname: "" }));
+  }
+  function updateAccount(id, field, value) {
+    set("analytics", a => ({ ...a, accounts: a.accounts.map(x => x.id === id ? { ...x, [field]: Number(value) || 0 } : x) }));
+  }
+  function deleteAccount(id) {
+    set("analytics", a => ({ ...a, accounts: a.accounts.filter(x => x.id !== id) }));
+  }
 
   async function sendAI() {
     if (!aiInput.trim() || aiLoading) return;
@@ -113,6 +133,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
   function updateAnalytic(platform, field, value) {
     set("analytics", a => ({ ...a, [platform]: { ...a[platform], [field]: Number(value) || 0 } }));
   }
+
 
   const statuses = ["Contacted", "Negotiating", "Closed", "Lost"];
   const statusColor = { Contacted: "#3b82f6", Negotiating: "#f59e0b", Closed: "#10b981", Lost: "#ef4444" };
@@ -183,8 +204,8 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12, marginBottom: 16 }}>
             {[
-              { label: "Instagram", val: num(analytics.instagram.followers), icon: "📸", color: "#e1306c" },
-              { label: "YouTube Subs", val: num(analytics.youtube.subscribers), icon: "▶️", color: "#ff0000" },
+              { label: "Instagram Followers", val: num(totalFollowers("instagram")), icon: "📸", color: "#e1306c" },
+              { label: "YouTube Subs", val: num(totalFollowers("youtube")), icon: "▶️", color: "#ff0000" },
               { label: "LinkedIn", val: num(analytics.linkedin.followers), icon: "💼", color: "#0077b5" },
               { label: "Facebook", val: num(analytics.facebook.followers), icon: "📘", color: "#1877f2" },
               { label: "Total Earned", val: fmt(finance.earned), icon: "💰", color: "#10b981" },
@@ -216,25 +237,101 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
         </>}
 
         {/* ANALYTICS */}
-        {tab === 1 && [
-          { key: "instagram", label: "Instagram", icon: "📸", color: "#e1306c", fields: ["followers", "reach", "views"] },
-          { key: "youtube", label: "YouTube", icon: "▶️", color: "#ff0000", fields: ["subscribers", "views", "watchHours"] },
-          { key: "linkedin", label: "LinkedIn", icon: "💼", color: "#0077b5", fields: ["followers", "reach", "views"] },
-          { key: "facebook", label: "Facebook", icon: "📘", color: "#1877f2", fields: ["followers", "reach", "views"] },
-        ].map(p => (
-          <div key={p.key} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
-            <div style={{ fontWeight: 700, color: p.color, marginBottom: 12, fontSize: 15 }}>{p.icon} {p.label}</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-              {p.fields.map(f => (
-                <div key={f}>
-                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
-                  <input type="number" value={analytics[p.key][f]} onChange={e => updateAnalytic(p.key, f, e.target.value)} style={s.bg} />
-                  <div style={{ fontSize: 12, color: p.color, marginTop: 2, fontWeight: 700 }}>{num(analytics[p.key][f])}</div>
-                </div>
-              ))}
+        {tab === 1 && <>
+          {/* Add Account */}
+          <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 12 }}>➕ Add Account</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "end" }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Platform</div>
+                <select value={newAccount.platform} onChange={e => setNewAccount(n => ({ ...n, platform: e.target.value }))} style={{ ...s.bg, width: "auto", minWidth: "100%" }}>
+                  <option value="instagram">📸 Instagram</option>
+                  <option value="youtube">▶️ YouTube</option>
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Nickname / Handle</div>
+                <input value={newAccount.nickname} onChange={e => setNewAccount(n => ({ ...n, nickname: e.target.value }))} onKeyDown={e => e.key === "Enter" && addAccount()} placeholder="e.g. Main Channel, Niche Page..." style={s.bg} />
+              </div>
+              <button onClick={addAccount} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontWeight: 600 }}>Add</button>
             </div>
           </div>
-        ))}
+
+          {/* Instagram Accounts */}
+          {igAccounts.length > 0 && <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700, color: "#e1306c", fontSize: 15 }}>📸 Instagram Accounts</div>
+              <div style={{ fontSize: 12, color: "#64748b" }}>Total followers: <span style={{ color: "#e1306c", fontWeight: 700 }}>{num(totalFollowers("instagram"))}</span></div>
+            </div>
+            {igAccounts.map(acc => (
+              <div key={acc.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontWeight: 600, color: "#e1306c" }}>@{acc.nickname}</div>
+                  <button onClick={() => deleteAccount(acc.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>🗑 Remove</button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+                  {["followers", "reach", "views"].map(f => (
+                    <div key={f}>
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
+                      <input type="number" value={acc[f] || 0} onChange={e => updateAccount(acc.id, f, e.target.value)} style={s.bg} />
+                      <div style={{ fontSize: 12, color: "#e1306c", marginTop: 2, fontWeight: 700 }}>{num(acc[f] || 0)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </>}
+
+          {/* YouTube Accounts */}
+          {ytAccounts.length > 0 && <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, marginTop: igAccounts.length > 0 ? 16 : 0 }}>
+              <div style={{ fontWeight: 700, color: "#ff0000", fontSize: 15 }}>▶️ YouTube Channels</div>
+              <div style={{ fontSize: 12, color: "#64748b" }}>Total subs: <span style={{ color: "#ff0000", fontWeight: 700 }}>{num(totalFollowers("youtube"))}</span></div>
+            </div>
+            {ytAccounts.map(acc => (
+              <div key={acc.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontWeight: 600, color: "#ff0000" }}>📺 {acc.nickname}</div>
+                  <button onClick={() => deleteAccount(acc.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>🗑 Remove</button>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+                  {["subscribers", "views", "watchHours"].map(f => (
+                    <div key={f}>
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f === "watchHours" ? "Watch Hours" : f}</div>
+                      <input type="number" value={acc[f] || 0} onChange={e => updateAccount(acc.id, f, e.target.value)} style={s.bg} />
+                      <div style={{ fontSize: 12, color: "#ff0000", marginTop: 2, fontWeight: 700 }}>{num(acc[f] || 0)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </>}
+
+          {accounts.length === 0 && (
+            <div style={{ color: "#475569", textAlign: "center", padding: 40, fontSize: 13 }}>No accounts yet. Add your Instagram pages and YouTube channels above!</div>
+          )}
+
+          {/* LinkedIn & Facebook — single accounts */}
+          <div style={{ marginTop: 16 }}>
+            {[
+              { key: "linkedin", label: "LinkedIn", icon: "💼", color: "#0077b5", fields: ["followers", "reach", "views"] },
+              { key: "facebook", label: "Facebook", icon: "📘", color: "#1877f2", fields: ["followers", "reach", "views"] },
+            ].map(p => (
+              <div key={p.key} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, color: p.color, marginBottom: 12, fontSize: 15 }}>{p.icon} {p.label}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+                  {p.fields.map(f => (
+                    <div key={f}>
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
+                      <input type="number" value={analytics[p.key]?.[f] || 0} onChange={e => updateAnalytic(p.key, f, e.target.value)} style={s.bg} />
+                      <div style={{ fontSize: 12, color: p.color, marginTop: 2, fontWeight: 700 }}>{num(analytics[p.key]?.[f] || 0)}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>}
 
         {/* GOALS */}
         {tab === 2 && <>
