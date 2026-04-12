@@ -71,19 +71,54 @@ export default function Home() {
   const ytAccounts = accounts.filter(a => a.platform === "youtube");
   const totalFollowers = (p) => accounts.filter(a => a.platform === p).reduce((s, a) => s + (a.followers || a.subscribers || 0), 0);
 
+  const [fetchingId, setFetchingId] = useState(null);
+  const [fetchError, setFetchError] = useState({});
+
   function addAccount() {
     if (!newAccount.nickname.trim()) return;
     const base = newAccount.platform === "youtube"
-      ? { subscribers: 0, views: 0, watchHours: 0 }
-      : { followers: 0, reach: 0, views: 0 };
+      ? { subscribers: 0, views: 0, watchHours: 0, channelId: "" }
+      : { followers: 0, reach: 0, views: 0, profileUrl: "" };
     set("analytics", a => ({ ...a, accounts: [...(a.accounts || []), { ...base, ...newAccount, id: Date.now() }] }));
     setNewAccount(n => ({ ...n, nickname: "" }));
   }
   function updateAccount(id, field, value) {
+    set("analytics", a => ({ ...a, accounts: a.accounts.map(x => x.id === id ? { ...x, [field]: value } : x) }));
+  }
+  function updateAccountNum(id, field, value) {
     set("analytics", a => ({ ...a, accounts: a.accounts.map(x => x.id === id ? { ...x, [field]: Number(value) || 0 } : x) }));
   }
   function deleteAccount(id) {
     set("analytics", a => ({ ...a, accounts: a.accounts.filter(x => x.id !== id) }));
+  }
+
+  async function fetchYouTube(acc) {
+    if (!acc.channelId?.trim()) {
+      setFetchError(e => ({ ...e, [acc.id]: "Enter a Channel ID first" }));
+      return;
+    }
+    setFetchingId(acc.id);
+    setFetchError(e => ({ ...e, [acc.id]: null }));
+    try {
+      const key = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
+      const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${acc.channelId.trim()}&key=${key}`);
+      const data = await res.json();
+      const stats = data.items?.[0]?.statistics;
+      if (!stats) throw new Error("Channel not found");
+      set("analytics", a => ({
+        ...a,
+        accounts: a.accounts.map(x => x.id === acc.id ? {
+          ...x,
+          subscribers: Number(stats.subscriberCount) || 0,
+          views: Number(stats.viewCount) || 0,
+          watchHours: x.watchHours || 0,
+          lastSynced: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
+        } : x)
+      }));
+    } catch (err) {
+      setFetchError(e => ({ ...e, [acc.id]: "Failed to fetch. Check Channel ID." }));
+    }
+    setFetchingId(null);
   }
 
   async function sendAI() {
@@ -261,19 +296,33 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
           {igAccounts.length > 0 && <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontWeight: 700, color: "#e1306c", fontSize: 15 }}>📸 Instagram Accounts</div>
-              <div style={{ fontSize: 12, color: "#64748b" }}>Total followers: <span style={{ color: "#e1306c", fontWeight: 700 }}>{num(totalFollowers("instagram"))}</span></div>
+              <div style={{ fontSize: 12, color: "#64748b" }}>Total: <span style={{ color: "#e1306c", fontWeight: 700 }}>{num(totalFollowers("instagram"))}</span></div>
             </div>
             {igAccounts.map(acc => (
               <div key={acc.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ fontWeight: 600, color: "#e1306c" }}>@{acc.nickname}</div>
-                  <button onClick={() => deleteAccount(acc.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>🗑 Remove</button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <a href={acc.profileUrl || "https://www.instagram.com/"} target="_blank" rel="noreferrer"
+                      style={{ background: "#e1306c22", color: "#e1306c", border: "1px solid #e1306c44", borderRadius: 6, padding: "4px 10px", fontSize: 12, textDecoration: "none", fontWeight: 600 }}>
+                      📊 Open Insights
+                    </a>
+                    <button onClick={() => deleteAccount(acc.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Profile URL (for quick access)</div>
+                  <input value={acc.profileUrl || ""} onChange={e => updateAccount(acc.id, "profileUrl", e.target.value)}
+                    placeholder="https://instagram.com/yourpage" style={s.bg} />
+                </div>
+                <div style={{ background: "#1e1e3a", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#94a3b8" }}>
+                  💡 Open Insights → copy Followers, Reach, Views → paste below. Takes 10 seconds!
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
                   {["followers", "reach", "views"].map(f => (
                     <div key={f}>
                       <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
-                      <input type="number" value={acc[f] || 0} onChange={e => updateAccount(acc.id, f, e.target.value)} style={s.bg} />
+                      <input type="number" value={acc[f] || 0} onChange={e => updateAccountNum(acc.id, f, e.target.value)} style={s.bg} />
                       <div style={{ fontSize: 12, color: "#e1306c", marginTop: 2, fontWeight: 700 }}>{num(acc[f] || 0)}</div>
                     </div>
                   ))}
@@ -292,13 +341,31 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
               <div key={acc.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
                   <div style={{ fontWeight: 600, color: "#ff0000" }}>📺 {acc.nickname}</div>
-                  <button onClick={() => deleteAccount(acc.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>🗑 Remove</button>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    {acc.lastSynced && <span style={{ fontSize: 11, color: "#64748b" }}>Synced {acc.lastSynced}</span>}
+                    <button onClick={() => fetchYouTube(acc)} disabled={fetchingId === acc.id}
+                      style={{ background: "#ff000022", color: "#ff0000", border: "1px solid #ff000044", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontWeight: 600, opacity: fetchingId === acc.id ? 0.6 : 1 }}>
+                      {fetchingId === acc.id ? "⏳ Fetching..." : "🔄 Auto Sync"}
+                    </button>
+                    <button onClick={() => deleteAccount(acc.id)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 13 }}>🗑</button>
+                  </div>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>YouTube Channel ID</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input value={acc.channelId || ""} onChange={e => updateAccount(acc.id, "channelId", e.target.value)}
+                      placeholder="e.g. UCxxxxxxxxxxxxxxxxxxxxxx" style={{ ...s.bg, flex: 1 }} />
+                  </div>
+                  <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
+                    Find it: YouTube Studio → Customization → Basic Info → Channel ID
+                  </div>
+                  {fetchError[acc.id] && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 4 }}>⚠️ {fetchError[acc.id]}</div>}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-                  {["subscribers", "views", "watchHours"].map(f => (
+                  {[["subscribers","Subscribers"],["views","Total Views"],["watchHours","Watch Hours"]].map(([f, label]) => (
                     <div key={f}>
-                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f === "watchHours" ? "Watch Hours" : f}</div>
-                      <input type="number" value={acc[f] || 0} onChange={e => updateAccount(acc.id, f, e.target.value)} style={s.bg} />
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>{label}</div>
+                      <input type="number" value={acc[f] || 0} onChange={e => updateAccountNum(acc.id, f, e.target.value)} style={s.bg} />
                       <div style={{ fontSize: 12, color: "#ff0000", marginTop: 2, fontWeight: 700 }}>{num(acc[f] || 0)}</div>
                     </div>
                   ))}
