@@ -248,9 +248,12 @@ Be concise, actionable, and motivating.`;
       <div style={{ fontSize: 48, marginBottom: 16 }}>⚡</div>
       <div style={{ fontSize: 28, fontWeight: 900, color: "#a78bfa", marginBottom: 8 }}>Project 20L</div>
       <div style={{ color: "#64748b", marginBottom: 32, fontSize: 14 }}>Your anonymous creator command center</div>
-      <button onClick={() => signIn("google")} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
+      <button onClick={() => signIn("google", { callbackUrl: "https://project-20l.vercel.app" })} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
         🔐 Sign in with Google
       </button>
+      <div style={{ color: "#475569", fontSize: 12, marginTop: 12 }}>
+        📱 On mobile? Open in <strong style={{color:"#a78bfa"}}>Chrome</strong> or <strong style={{color:"#a78bfa"}}>Safari</strong> for best experience
+      </div>
       <div style={{ color: "#334155", fontSize: 12, marginTop: 16 }}>Only your account can access this</div>
     </div>
   );
