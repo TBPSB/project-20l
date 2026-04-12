@@ -41,11 +41,22 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false);
   const chatRef = useRef(null);
 
-  // Load from localStorage
+  // Load from localStorage — merge with defaults to avoid missing keys
   useEffect(() => {
     try {
       const saved = localStorage.getItem("p20l");
-      if (saved) setState(JSON.parse(saved));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setState(s => ({
+          ...s,
+          ...parsed,
+          analytics: {
+            ...s.analytics,
+            ...parsed.analytics,
+            accounts: parsed.analytics?.accounts || [],
+          }
+        }));
+      }
     } catch {}
   }, []);
 
@@ -81,13 +92,14 @@ export default function Home() {
 
   // Auto-generate ideas on load for each IG account
   useEffect(() => {
+    if (!igAccounts || igAccounts.length === 0) return;
     const today = new Date().toDateString();
-    igAccounts && igAccounts.forEach(acc => {
-      if (lastIdeaDate[acc.id] !== today && acc.niche) {
+    igAccounts.forEach(acc => {
+      if (acc.niche && lastIdeaDate[acc.id] !== today) {
         generateIdeas(acc, true);
       }
     });
-  }, [analytics.accounts]);
+  }, [state.analytics.accounts]);
 
   async function generateIdeas(acc, auto = false) {
     if (!acc.niche) return;
