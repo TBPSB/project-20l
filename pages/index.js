@@ -1,5 +1,5 @@
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const GOAL = 2000000;
 const TABS = ["🏠 War Room", "📊 Analytics", "🎯 Goals", "💰 Finance", "🤝 Leads", "🎨 Creator Studio", "🤖 AI Assistant"];
@@ -11,6 +11,7 @@ function fmt(n) {
   return "₹" + n;
 }
 function num(n) {
+  if (!n || isNaN(n)) return "0";
   if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
   if (n >= 1000) return (n / 1000).toFixed(1) + "K";
   return String(n);
@@ -28,12 +29,23 @@ const defaultState = {
   tasks: [],
 };
 
+const inp = { background: "#1e1e3a", border: "1px solid #2d2d5a", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", outline: "none", width: "100%", boxSizing: "border-box" };
+
 export default function Home() {
   const { data: session, status } = useSession();
   const [tab, setTab] = useState(0);
   const [state, setState] = useState(defaultState);
   const [newTask, setNewTask] = useState("");
   const [newLead, setNewLead] = useState({ name: "", value: "", status: "Contacted" });
+  const [newAccount, setNewAccount] = useState({ platform: "instagram", nickname: "" });
+  const [fetchingId, setFetchingId] = useState(null); // FIX 1: was missing
+  const [fetchError, setFetchError] = useState({});
+  const [postIdeas, setPostIdeas] = useState({});
+  const [generatingIdeas, setGeneratingIdeas] = useState({});
+  const [selectedIdea, setSelectedIdea] = useState(null);
+  const [generatedPost, setGeneratedPost] = useState(null);
+  const [generatingPost, setGeneratingPost] = useState(false);
+  const [lastIdeaDate, setLastIdeaDate] = useState({});
   const [aiMessages, setAiMessages] = useState([
     { role: "assistant", content: "Hey! I'm your anonymous AI assistant. Goal: ₹20 Lakh this year. Ask me anything — what to post, how to grow, what to do next. 💪" }
   ]);
@@ -41,17 +53,16 @@ export default function Home() {
   const [aiLoading, setAiLoading] = useState(false);
   const chatRef = useRef(null);
 
-  // Load from localStorage — merge with defaults to avoid missing keys
+  // Load from localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem("p20l");
       if (saved) {
         const parsed = JSON.parse(saved);
         setState(s => ({
-          ...s,
-          ...parsed,
+          ...s, ...parsed,
           analytics: {
-            ...s.analytics,
+            ...defaultState.analytics,
             ...parsed.analytics,
             accounts: parsed.analytics?.accounts || [],
           }
@@ -60,7 +71,7 @@ export default function Home() {
     } catch {}
   }, []);
 
-  // Save to localStorage on change
+  // Save to localStorage
   useEffect(() => {
     localStorage.setItem("p20l", JSON.stringify(state));
   }, [state]);
@@ -71,55 +82,33 @@ export default function Home() {
 
   const { finance, analytics, leads, goals, tasks } = state;
   const set = (key, val) => setState(s => ({ ...s, [key]: typeof val === "function" ? val(s[key]) : val }));
-  const [newAccount, setNewAccount] = useState({ platform: "instagram", nickname: "" });
+
+  const accounts = analytics?.accounts || [];
+  const igAccounts = accounts.filter(a => a.platform === "instagram");
+  const ytAccounts = accounts.filter(a => a.platform === "youtube");
+  const totalFollowers = (p) => accounts.filter(a => a.platform === p).reduce((sum, a) => sum + (Number(a.followers) || Number(a.subscribers) || 0), 0);
 
   const pct = Math.min((finance.earned / GOAL) * 100, 100).toFixed(1);
   const left = GOAL - finance.earned;
   const due = finance.earned - finance.paid;
   const monthsLeft = Math.max(1, 12 - new Date().getMonth());
 
-  const accounts = analytics.accounts || [];
-  const igAccounts = accounts.filter(a => a.platform === "instagram");
-  const ytAccounts = accounts.filter(a => a.platform === "youtube");
-  const totalFollowers = (p) => accounts.filter(a => a.platform === p).reduce((s, a) => s + (a.followers || a.subscribers || 0), 0);
-
-  const [postIdeas, setPostIdeas] = useState({});
-  const [generatingIdeas, setGeneratingIdeas] = useState({});
-  const [selectedIdea, setSelectedIdea] = useState(null);
-  const [generatedPost, setGeneratedPost] = useState(null);
-  const [generatingPost, setGeneratingPost] = useState(false);
-  const [lastIdeaDate, setLastIdeaDate] = useState({});
-
-  // Auto-generate ideas on load for each IG account
-  useEffect(() => {
-    if (!igAccounts || igAccounts.length === 0) return;
-    const today = new Date().toDateString();
-    igAccounts.forEach(acc => {
-      if (acc.niche && lastIdeaDate[acc.id] !== today) {
-        generateIdeas(acc, true);
-      }
-    });
-  }, [state.analytics.accounts]);
-
-  async function generateIdeas(acc, auto = false) {
+  // FIX 3: defined before useEffect using useCallback
+  const generateIdeas = useCallback(async (acc, auto = false) => {
     if (!acc.niche) return;
     setGeneratingIdeas(g => ({ ...g, [acc.id]: true }));
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: `You are a viral Instagram content strategist. Generate exactly 3 unique, trending post ideas for today for a ${acc.niche} niche Instagram page. 
-Return ONLY a JSON array with 3 objects, each having: "title" (5-7 words), "hook" (first line that stops scroll), "format" (Reel/Carousel/Quote/Infographic).
-Example: [{"title":"...","hook":"...","format":"Reel"}]
-No extra text, no markdown, just the JSON array.`,
-          messages: [{ role: "user", content: `Generate 3 fresh Instagram post ideas for ${new Date().toDateString()} for a ${acc.niche} page called @${acc.nickname}.` }]
+          context: `You are a viral Instagram content strategist. Generate exactly 3 unique, trending post ideas for today for a ${acc.niche} niche Instagram page. Return ONLY a JSON array with 3 objects, each having: "title" (5-7 words), "hook" (first line that stops scroll), "format" (Reel/Carousel/Quote/Infographic). No extra text, no markdown, just the JSON array.`,
+          messages: [{ role: "user", content: `Generate 3 fresh Instagram post ideas for ${new Date().toDateString()} for a ${acc.niche} page called @${acc.nickname}.` }],
+          raw: true,
         })
       });
       const data = await res.json();
-      const text = data.content?.map(c => c.text || "").join("") || "[]";
+      const text = data.reply || "[]";
       const clean = text.replace(/```json|```/g, "").trim();
       const ideas = JSON.parse(clean);
       setPostIdeas(p => ({ ...p, [acc.id]: ideas }));
@@ -128,42 +117,45 @@ No extra text, no markdown, just the JSON array.`,
       setPostIdeas(p => ({ ...p, [acc.id]: [] }));
     }
     setGeneratingIdeas(g => ({ ...g, [acc.id]: false }));
-  }
+  }, []);
+
+  // Auto-generate ideas on load
+  useEffect(() => {
+    if (!igAccounts.length) return;
+    const today = new Date().toDateString();
+    igAccounts.forEach(acc => {
+      if (acc.niche && lastIdeaDate[acc.id] !== today) generateIdeas(acc, true);
+    });
+  }, [state.analytics.accounts]);
 
   async function generatePost(acc, idea) {
     setSelectedIdea({ acc, idea });
     setGeneratedPost(null);
     setGeneratingPost(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const res = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: `You are a viral Instagram content writer. Write a complete Instagram post for a ${acc.niche} page.
-Return ONLY a JSON object with: "caption" (full caption with emojis, max 300 words), "hashtags" (30 relevant hashtags as a string), "cta" (call to action line).
-No extra text, just JSON.`,
-          messages: [{ role: "user", content: `Write a full Instagram post for this idea:\nTitle: ${idea.title}\nHook: ${idea.hook}\nFormat: ${idea.format}\nNiche: ${acc.niche}\nPage: @${acc.nickname}` }]
+          context: `You are a viral Instagram content writer. Write a complete Instagram post for a ${acc.niche} page. Return ONLY a JSON object with: "caption" (full caption with emojis, max 300 words), "hashtags" (30 relevant hashtags as a string), "cta" (call to action line). No extra text, just JSON.`,
+          messages: [{ role: "user", content: `Write a full Instagram post:\nTitle: ${idea.title}\nHook: ${idea.hook}\nFormat: ${idea.format}\nNiche: ${acc.niche}\nPage: @${acc.nickname}` }],
+          raw: true,
         })
       });
       const data = await res.json();
-      const text = data.content?.map(c => c.text || "").join("") || "{}";
-      const clean = text.replace(/```json|```/g, "").trim();
-      const post = JSON.parse(clean);
-      setGeneratedPost(post);
+      const clean = (data.reply || "{}").replace(/```json|```/g, "").trim();
+      setGeneratedPost(JSON.parse(clean));
     } catch {
       setGeneratedPost({ caption: "Error generating post. Try again.", hashtags: "", cta: "" });
     }
     setGeneratingPost(false);
   }
-  const [fetchError, setFetchError] = useState({});
 
   function addAccount() {
     if (!newAccount.nickname.trim()) return;
     const base = newAccount.platform === "youtube"
       ? { subscribers: 0, views: 0, watchHours: 0, channelId: "" }
-      : { followers: 0, reach: 0, views: 0, profileUrl: "" };
+      : { followers: 0, reach: 0, views: 0, profileUrl: "", niche: "" };
     set("analytics", a => ({ ...a, accounts: [...(a.accounts || []), { ...base, ...newAccount, id: Date.now() }] }));
     setNewAccount(n => ({ ...n, nickname: "" }));
   }
@@ -178,10 +170,7 @@ No extra text, just JSON.`,
   }
 
   async function fetchYouTube(acc) {
-    if (!acc.channelId?.trim()) {
-      setFetchError(e => ({ ...e, [acc.id]: "Enter a Channel ID first" }));
-      return;
-    }
+    if (!acc.channelId?.trim()) { setFetchError(e => ({ ...e, [acc.id]: "Enter a Channel ID first" })); return; }
     setFetchingId(acc.id);
     setFetchError(e => ({ ...e, [acc.id]: null }));
     try {
@@ -189,20 +178,16 @@ No extra text, just JSON.`,
       const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics&id=${acc.channelId.trim()}&key=${key}`);
       const data = await res.json();
       const stats = data.items?.[0]?.statistics;
-      if (!stats) throw new Error("Channel not found");
+      if (!stats) throw new Error("Not found");
       set("analytics", a => ({
-        ...a,
-        accounts: a.accounts.map(x => x.id === acc.id ? {
+        ...a, accounts: a.accounts.map(x => x.id === acc.id ? {
           ...x,
           subscribers: Number(stats.subscriberCount) || 0,
           views: Number(stats.viewCount) || 0,
-          watchHours: x.watchHours || 0,
           lastSynced: new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }),
         } : x)
       }));
-    } catch (err) {
-      setFetchError(e => ({ ...e, [acc.id]: "Failed to fetch. Check Channel ID." }));
-    }
+    } catch { setFetchError(e => ({ ...e, [acc.id]: "Failed. Check Channel ID." })); }
     setFetchingId(null);
   }
 
@@ -214,20 +199,19 @@ No extra text, just JSON.`,
     setAiMessages(newMessages);
     setAiLoading(true);
     try {
+      // FIX 2: use accounts array instead of deleted analytics.instagram/youtube
+      const igTotal = totalFollowers("instagram");
+      const ytTotal = totalFollowers("youtube");
       const context = `You are a private AI business assistant for an anonymous creator targeting ₹20 Lakh this year.
 Stats: Earned ₹${finance.earned}, Paid ₹${finance.paid}, Left ₹${left}.
-Instagram: ${analytics.instagram.followers} followers, ${analytics.instagram.reach} reach.
-YouTube: ${analytics.youtube.subscribers} subs, ${analytics.youtube.views} views.
-LinkedIn: ${analytics.linkedin.followers} followers. Facebook: ${analytics.facebook.followers} followers.
+Instagram total followers: ${igTotal}. YouTube total subscribers: ${ytTotal}.
+LinkedIn followers: ${analytics.linkedin?.followers || 0}. Facebook followers: ${analytics.facebook?.followers || 0}.
 Active leads: ${leads.filter(l => l.status !== "Lost").length}. Tasks today: ${tasks.length}.
-Be concise, actionable, and motivating. User is anonymous and wants to grow fast.`;
+Be concise, actionable, and motivating.`;
       const res = await fetch("/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          context,
-          messages: newMessages.filter((_, i) => i > 0).map(m => ({ role: m.role, content: m.content }))
-        }),
+        body: JSON.stringify({ context, messages: newMessages.filter((_, i) => i > 0).map(m => ({ role: m.role, content: m.content })) }),
       });
       const data = await res.json();
       setAiMessages(m => [...m, { role: "assistant", content: data.reply || "Error. Try again." }]);
@@ -242,9 +226,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
     set("tasks", t => [...t, { id: Date.now(), text: newTask.trim(), done: false }]);
     setNewTask("");
   }
-  function toggleTask(id) {
-    set("tasks", t => t.map(x => x.id === id ? { ...x, done: !x.done } : x));
-  }
+  function toggleTask(id) { set("tasks", t => t.map(x => x.id === id ? { ...x, done: !x.done } : x)); }
   function addLead() {
     if (!newLead.name.trim()) return;
     set("leads", l => [...l, { ...newLead, id: Date.now(), value: Number(newLead.value) || 0 }]);
@@ -254,13 +236,8 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
     set("analytics", a => ({ ...a, [platform]: { ...a[platform], [field]: Number(value) || 0 } }));
   }
 
-
   const statuses = ["Contacted", "Negotiating", "Closed", "Lost"];
   const statusColor = { Contacted: "#3b82f6", Negotiating: "#f59e0b", Closed: "#10b981", Lost: "#ef4444" };
-
-  const s = { // common input style
-    bg: { background: "#1e1e3a", border: "1px solid #2d2d5a", borderRadius: 8, padding: "9px 12px", color: "#e2e8f0", outline: "none", width: "100%", boxSizing: "border-box" }
-  };
 
   if (status === "loading") return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0f", color: "#a78bfa", fontSize: 18 }}>Loading...</div>
@@ -326,22 +303,22 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
             {[
               { label: "Instagram Followers", val: num(totalFollowers("instagram")), icon: "📸", color: "#e1306c" },
               { label: "YouTube Subs", val: num(totalFollowers("youtube")), icon: "▶️", color: "#ff0000" },
-              { label: "LinkedIn", val: num(analytics.linkedin.followers), icon: "💼", color: "#0077b5" },
-              { label: "Facebook", val: num(analytics.facebook.followers), icon: "📘", color: "#1877f2" },
+              { label: "LinkedIn", val: num(analytics.linkedin?.followers || 0), icon: "💼", color: "#0077b5" },
+              { label: "Facebook", val: num(analytics.facebook?.followers || 0), icon: "📘", color: "#1877f2" },
               { label: "Total Earned", val: fmt(finance.earned), icon: "💰", color: "#10b981" },
               { label: "Active Leads", val: leads.filter(l => l.status !== "Lost").length, icon: "🤝", color: "#f59e0b" },
-            ].map((s, i) => (
+            ].map((card, i) => (
               <div key={i} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 10, padding: "14px 16px" }}>
-                <div style={{ fontSize: 20 }}>{s.icon}</div>
-                <div style={{ fontSize: 22, fontWeight: 800, color: s.color, marginTop: 4 }}>{s.val}</div>
-                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{s.label}</div>
+                <div style={{ fontSize: 20 }}>{card.icon}</div>
+                <div style={{ fontSize: 22, fontWeight: 800, color: card.color, marginTop: 4 }}>{card.val}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{card.label}</div>
               </div>
             ))}
           </div>
           <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16 }}>
             <div style={{ fontWeight: 700, marginBottom: 12, color: "#a78bfa" }}>📋 Today's Tasks</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <input value={newTask} onChange={e => setNewTask(e.target.value)} onKeyDown={e => e.key === "Enter" && addTask()} placeholder="Add a task..." style={{ ...s.bg, flex: 1 }} />
+              <input value={newTask} onChange={e => setNewTask(e.target.value)} onKeyDown={e => e.key === "Enter" && addTask()} placeholder="Add a task..." style={{ ...inp, flex: 1 }} />
               <button onClick={addTask} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontWeight: 600 }}>Add</button>
             </div>
             {tasks.length === 0 && <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 12 }}>No tasks yet!</div>}
@@ -358,26 +335,24 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
 
         {/* ANALYTICS */}
         {tab === 1 && <>
-          {/* Add Account */}
           <div style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
             <div style={{ fontWeight: 700, color: "#a78bfa", marginBottom: 12 }}>➕ Add Account</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Platform</div>
-                <select value={newAccount.platform} onChange={e => setNewAccount(n => ({ ...n, platform: e.target.value }))} style={{ ...s.bg, width: "auto", minWidth: "100%" }}>
+                <select value={newAccount.platform} onChange={e => setNewAccount(n => ({ ...n, platform: e.target.value }))} style={{ ...inp, width: "auto", minWidth: "100%" }}>
                   <option value="instagram">📸 Instagram</option>
                   <option value="youtube">▶️ YouTube</option>
                 </select>
               </div>
               <div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Nickname / Handle</div>
-                <input value={newAccount.nickname} onChange={e => setNewAccount(n => ({ ...n, nickname: e.target.value }))} onKeyDown={e => e.key === "Enter" && addAccount()} placeholder="e.g. Main Channel, Niche Page..." style={s.bg} />
+                <input value={newAccount.nickname} onChange={e => setNewAccount(n => ({ ...n, nickname: e.target.value }))} onKeyDown={e => e.key === "Enter" && addAccount()} placeholder="e.g. Main Channel..." style={inp} />
               </div>
               <button onClick={addAccount} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", cursor: "pointer", fontWeight: 600 }}>Add</button>
             </div>
           </div>
 
-          {/* Instagram Accounts */}
           {igAccounts.length > 0 && <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
               <div style={{ fontWeight: 700, color: "#e1306c", fontSize: 15 }}>📸 Instagram Accounts</div>
@@ -396,9 +371,8 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
                   </div>
                 </div>
                 <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Profile URL (for quick access)</div>
-                  <input value={acc.profileUrl || ""} onChange={e => updateAccount(acc.id, "profileUrl", e.target.value)}
-                    placeholder="https://instagram.com/yourpage" style={s.bg} />
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Profile URL</div>
+                  <input value={acc.profileUrl || ""} onChange={e => updateAccount(acc.id, "profileUrl", e.target.value)} placeholder="https://instagram.com/yourpage" style={inp} />
                 </div>
                 <div style={{ background: "#1e1e3a", borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#94a3b8" }}>
                   💡 Open Insights → copy Followers, Reach, Views → paste below. Takes 10 seconds!
@@ -407,7 +381,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
                   {["followers", "reach", "views"].map(f => (
                     <div key={f}>
                       <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
-                      <input type="number" value={acc[f] || 0} onChange={e => updateAccountNum(acc.id, f, e.target.value)} style={s.bg} />
+                      <input type="number" value={acc[f] || 0} onChange={e => updateAccountNum(acc.id, f, e.target.value)} style={inp} />
                       <div style={{ fontSize: 12, color: "#e1306c", marginTop: 2, fontWeight: 700 }}>{num(acc[f] || 0)}</div>
                     </div>
                   ))}
@@ -416,7 +390,6 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
             ))}
           </>}
 
-          {/* YouTube Accounts */}
           {ytAccounts.length > 0 && <>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, marginTop: igAccounts.length > 0 ? 16 : 0 }}>
               <div style={{ fontWeight: 700, color: "#ff0000", fontSize: 15 }}>▶️ YouTube Channels</div>
@@ -437,20 +410,15 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
                 </div>
                 <div style={{ marginBottom: 10 }}>
                   <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>YouTube Channel ID</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input value={acc.channelId || ""} onChange={e => updateAccount(acc.id, "channelId", e.target.value)}
-                      placeholder="e.g. UCxxxxxxxxxxxxxxxxxxxxxx" style={{ ...s.bg, flex: 1 }} />
-                  </div>
-                  <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
-                    Find it: YouTube Studio → Customization → Basic Info → Channel ID
-                  </div>
+                  <input value={acc.channelId || ""} onChange={e => updateAccount(acc.id, "channelId", e.target.value)} placeholder="e.g. UCxxxxxxxxxxxxxxxxxxxxxx" style={inp} />
+                  <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>Find it: YouTube Studio → Customization → Basic Info → Channel ID</div>
                   {fetchError[acc.id] && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 4 }}>⚠️ {fetchError[acc.id]}</div>}
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-                  {[["subscribers","Subscribers"],["views","Total Views"],["watchHours","Watch Hours"]].map(([f, label]) => (
+                  {[["subscribers", "Subscribers"], ["views", "Total Views"], ["watchHours", "Watch Hours"]].map(([f, label]) => (
                     <div key={f}>
                       <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>{label}</div>
-                      <input type="number" value={acc[f] || 0} onChange={e => updateAccountNum(acc.id, f, e.target.value)} style={s.bg} />
+                      <input type="number" value={acc[f] || 0} onChange={e => updateAccountNum(acc.id, f, e.target.value)} style={inp} />
                       <div style={{ fontSize: 12, color: "#ff0000", marginTop: 2, fontWeight: 700 }}>{num(acc[f] || 0)}</div>
                     </div>
                   ))}
@@ -459,11 +427,8 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
             ))}
           </>}
 
-          {accounts.length === 0 && (
-            <div style={{ color: "#475569", textAlign: "center", padding: 40, fontSize: 13 }}>No accounts yet. Add your Instagram pages and YouTube channels above!</div>
-          )}
+          {accounts.length === 0 && <div style={{ color: "#475569", textAlign: "center", padding: 40, fontSize: 13 }}>No accounts yet. Add your Instagram pages and YouTube channels above!</div>}
 
-          {/* LinkedIn & Facebook — single accounts */}
           <div style={{ marginTop: 16 }}>
             {[
               { key: "linkedin", label: "LinkedIn", icon: "💼", color: "#0077b5", fields: ["followers", "reach", "views"] },
@@ -475,7 +440,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
                   {p.fields.map(f => (
                     <div key={f}>
                       <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4, textTransform: "capitalize" }}>{f}</div>
-                      <input type="number" value={analytics[p.key]?.[f] || 0} onChange={e => updateAnalytic(p.key, f, e.target.value)} style={s.bg} />
+                      <input type="number" value={analytics[p.key]?.[f] || 0} onChange={e => updateAnalytic(p.key, f, e.target.value)} style={inp} />
                       <div style={{ fontSize: 12, color: p.color, marginTop: 2, fontWeight: 700 }}>{num(analytics[p.key]?.[f] || 0)}</div>
                     </div>
                   ))}
@@ -497,8 +462,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
               <div key={key} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16 }}>
                 <div style={{ fontWeight: 600, marginBottom: 8, color: "#a78bfa" }}>{label}</div>
                 <textarea value={goals[key]} onChange={e => set("goals", g => ({ ...g, [key]: e.target.value }))}
-                  placeholder="Write your goal..." rows={3}
-                  style={{ ...s.bg, resize: "none" }} />
+                  placeholder="Write your goal..." rows={3} style={{ ...inp, resize: "none" }} />
               </div>
             ))}
           </div>
@@ -537,7 +501,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
                 <div key={key}>
                   <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{label}</div>
                   <input type="number" value={finance[key]} onChange={e => set("finance", f => ({ ...f, [key]: Number(e.target.value) || 0 }))}
-                    style={{ ...s.bg, color, fontSize: 16, fontWeight: 700 }} />
+                    style={{ ...inp, color, fontSize: 16, fontWeight: 700 }} />
                 </div>
               ))}
             </div>
@@ -559,16 +523,16 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
             <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "end" }}>
               <div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Name / Brand</div>
-                <input value={newLead.name} onChange={e => setNewLead(l => ({ ...l, name: e.target.value }))} placeholder="Brand XYZ" style={s.bg} />
+                <input value={newLead.name} onChange={e => setNewLead(l => ({ ...l, name: e.target.value }))} placeholder="Brand XYZ" style={inp} />
               </div>
               <div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Value (₹)</div>
-                <input type="number" value={newLead.value} onChange={e => setNewLead(l => ({ ...l, value: e.target.value }))} placeholder="50000" style={{ ...s.bg, width: 100 }} />
+                <input type="number" value={newLead.value} onChange={e => setNewLead(l => ({ ...l, value: e.target.value }))} placeholder="50000" style={{ ...inp, width: 100 }} />
               </div>
               <div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Status</div>
-                <select value={newLead.status} onChange={e => setNewLead(l => ({ ...l, status: e.target.value }))} style={{ ...s.bg, width: "auto" }}>
-                  {statuses.map(s => <option key={s}>{s}</option>)}
+                <select value={newLead.status} onChange={e => setNewLead(l => ({ ...l, status: e.target.value }))} style={{ ...inp, width: "auto" }}>
+                  {statuses.map(st => <option key={st}>{st}</option>)}
                 </select>
               </div>
             </div>
@@ -584,7 +548,7 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
               <div style={{ display: "flex", gap: 8 }}>
                 <select value={l.status} onChange={e => set("leads", ls => ls.map(x => x.id === l.id ? { ...x, status: e.target.value } : x))}
                   style={{ background: "#1e1e3a", border: "1px solid #2d2d5a", borderRadius: 6, padding: "5px 8px", color: statusColor[l.status], outline: "none", fontSize: 12 }}>
-                  {statuses.map(s => <option key={s}>{s}</option>)}
+                  {statuses.map(st => <option key={st}>{st}</option>)}
                 </select>
                 <button onClick={() => set("leads", ls => ls.filter(x => x.id !== l.id))} style={{ background: "#1e1e3a", border: "none", color: "#ef4444", borderRadius: 6, padding: "5px 8px", cursor: "pointer" }}>✕</button>
               </div>
@@ -605,10 +569,8 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
               No Instagram accounts added yet. Go to 📊 Analytics → Add an Instagram account first!
             </div>
           )}
-
           {igAccounts.map(acc => (
             <div key={acc.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
-              {/* Account Header */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, color: "#e1306c", fontSize: 15 }}>📸 @{acc.nickname}</div>
                 <button onClick={() => generateIdeas(acc)} disabled={generatingIdeas[acc.id]}
@@ -616,56 +578,42 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
                   {generatingIdeas[acc.id] ? "⏳ Generating..." : "🔄 Generate New Ideas"}
                 </button>
               </div>
-
-              {/* Niche Selector */}
               <div style={{ marginBottom: 12 }}>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Page Niche</div>
-                <select value={acc.niche || ""} onChange={e => { updateAccount(acc.id, "niche", e.target.value); }}
-                  style={{ ...s.bg, width: "auto", minWidth: 220 }}>
+                <select value={acc.niche || ""} onChange={e => updateAccount(acc.id, "niche", e.target.value)}
+                  style={{ ...inp, width: "auto", minWidth: 220 }}>
                   <option value="">-- Select Niche --</option>
                   {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
                 </select>
               </div>
-
-              {/* Today's Ideas */}
-              {generatingIdeas[acc.id] && (
-                <div style={{ color: "#a78bfa", fontSize: 13, padding: 12, textAlign: "center" }}>🤖 AI is generating today's post ideas...</div>
-              )}
-              {!generatingIdeas[acc.id] && postIdeas[acc.id]?.length > 0 && (
-                <>
-                  <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>📅 Today's 3 Post Ideas — {new Date().toDateString()}</div>
-                  {postIdeas[acc.id].map((idea, i) => (
-                    <div key={i} style={{ background: "#1a1a2e", border: "1px solid #2d2d5a", borderRadius: 10, padding: 12, marginBottom: 8 }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-                            <span style={{ background: "#7c3aed22", color: "#a78bfa", borderRadius: 99, padding: "2px 8px", fontSize: 11, fontWeight: 700 }}>#{i + 1}</span>
-                            <span style={{ background: "#1e3a2a", color: "#10b981", borderRadius: 99, padding: "2px 8px", fontSize: 11 }}>{idea.format}</span>
-                          </div>
-                          <div style={{ fontWeight: 600, color: "#e2e8f0", marginBottom: 4 }}>{idea.title}</div>
-                          <div style={{ fontSize: 12, color: "#94a3b8", fontStyle: "italic" }}>Hook: "{idea.hook}"</div>
+              {generatingIdeas[acc.id] && <div style={{ color: "#a78bfa", fontSize: 13, padding: 12, textAlign: "center" }}>🤖 AI is generating today's post ideas...</div>}
+              {!generatingIdeas[acc.id] && postIdeas[acc.id]?.length > 0 && <>
+                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>📅 Today's 3 Post Ideas — {new Date().toDateString()}</div>
+                {postIdeas[acc.id].map((idea, i) => (
+                  <div key={i} style={{ background: "#1a1a2e", border: "1px solid #2d2d5a", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                          <span style={{ background: "#7c3aed22", color: "#a78bfa", borderRadius: 99, padding: "2px 8px", fontSize: 11, fontWeight: 700 }}>#{i + 1}</span>
+                          <span style={{ background: "#1e3a2a", color: "#10b981", borderRadius: 99, padding: "2px 8px", fontSize: 11 }}>{idea.format}</span>
                         </div>
-                        <button onClick={() => generatePost(acc, idea)}
-                          style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12, marginLeft: 10, whiteSpace: "nowrap" }}>
-                          ✍️ Write Post
-                        </button>
+                        <div style={{ fontWeight: 600, color: "#e2e8f0", marginBottom: 4 }}>{idea.title}</div>
+                        <div style={{ fontSize: 12, color: "#94a3b8", fontStyle: "italic" }}>Hook: "{idea.hook}"</div>
                       </div>
+                      <button onClick={() => generatePost(acc, idea)}
+                        style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12, marginLeft: 10, whiteSpace: "nowrap" }}>
+                        ✍️ Write Post
+                      </button>
                     </div>
-                  ))}
-                </>
-              )}
+                  </div>
+                ))}
+              </>}
               {!generatingIdeas[acc.id] && !postIdeas[acc.id]?.length && acc.niche && (
-                <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 16 }}>
-                  Click "🔄 Generate New Ideas" to get today's post ideas!
-                </div>
+                <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 16 }}>Click "🔄 Generate New Ideas" to get today's post ideas!</div>
               )}
-              {!acc.niche && (
-                <div style={{ color: "#f59e0b", fontSize: 13, padding: 8 }}>⚠️ Select a niche above to get AI post ideas!</div>
-              )}
+              {!acc.niche && <div style={{ color: "#f59e0b", fontSize: 13, padding: 8 }}>⚠️ Select a niche above to get AI post ideas!</div>}
             </div>
           ))}
-
-          {/* Generated Post Modal */}
           {selectedIdea && (
             <div style={{ background: "#0f0f1a", border: "1px solid #7c3aed", borderRadius: 12, padding: 20, marginTop: 8 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
