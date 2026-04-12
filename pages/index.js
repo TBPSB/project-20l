@@ -2,7 +2,8 @@ import { useSession, signIn, signOut } from "next-auth/react";
 import { useState, useEffect, useRef } from "react";
 
 const GOAL = 2000000;
-const TABS = ["🏠 War Room", "📊 Analytics", "🎯 Goals", "💰 Finance", "🤝 Leads", "🤖 AI Assistant"];
+const TABS = ["🏠 War Room", "📊 Analytics", "🎯 Goals", "💰 Finance", "🤝 Leads", "🎨 Creator Studio", "🤖 AI Assistant"];
+const NICHES = ["Motivational / Quotes", "Fitness / Health", "Business / Money", "Entertainment / Memes", "Fashion / Lifestyle", "Food / Recipes", "Travel", "Technology", "Education", "Comedy / Memes"];
 
 function fmt(n) {
   if (n >= 100000) return "₹" + (n / 100000).toFixed(1) + "L";
@@ -71,7 +72,79 @@ export default function Home() {
   const ytAccounts = accounts.filter(a => a.platform === "youtube");
   const totalFollowers = (p) => accounts.filter(a => a.platform === p).reduce((s, a) => s + (a.followers || a.subscribers || 0), 0);
 
-  const [fetchingId, setFetchingId] = useState(null);
+  const [postIdeas, setPostIdeas] = useState({});
+  const [generatingIdeas, setGeneratingIdeas] = useState({});
+  const [selectedIdea, setSelectedIdea] = useState(null);
+  const [generatedPost, setGeneratedPost] = useState(null);
+  const [generatingPost, setGeneratingPost] = useState(false);
+  const [lastIdeaDate, setLastIdeaDate] = useState({});
+
+  // Auto-generate ideas on load for each IG account
+  useEffect(() => {
+    const today = new Date().toDateString();
+    igAccounts && igAccounts.forEach(acc => {
+      if (lastIdeaDate[acc.id] !== today && acc.niche) {
+        generateIdeas(acc, true);
+      }
+    });
+  }, [analytics.accounts]);
+
+  async function generateIdeas(acc, auto = false) {
+    if (!acc.niche) return;
+    setGeneratingIdeas(g => ({ ...g, [acc.id]: true }));
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: `You are a viral Instagram content strategist. Generate exactly 3 unique, trending post ideas for today for a ${acc.niche} niche Instagram page. 
+Return ONLY a JSON array with 3 objects, each having: "title" (5-7 words), "hook" (first line that stops scroll), "format" (Reel/Carousel/Quote/Infographic).
+Example: [{"title":"...","hook":"...","format":"Reel"}]
+No extra text, no markdown, just the JSON array.`,
+          messages: [{ role: "user", content: `Generate 3 fresh Instagram post ideas for ${new Date().toDateString()} for a ${acc.niche} page called @${acc.nickname}.` }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.map(c => c.text || "").join("") || "[]";
+      const clean = text.replace(/```json|```/g, "").trim();
+      const ideas = JSON.parse(clean);
+      setPostIdeas(p => ({ ...p, [acc.id]: ideas }));
+      if (auto) setLastIdeaDate(d => ({ ...d, [acc.id]: new Date().toDateString() }));
+    } catch {
+      setPostIdeas(p => ({ ...p, [acc.id]: [] }));
+    }
+    setGeneratingIdeas(g => ({ ...g, [acc.id]: false }));
+  }
+
+  async function generatePost(acc, idea) {
+    setSelectedIdea({ acc, idea });
+    setGeneratedPost(null);
+    setGeneratingPost(true);
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: `You are a viral Instagram content writer. Write a complete Instagram post for a ${acc.niche} page.
+Return ONLY a JSON object with: "caption" (full caption with emojis, max 300 words), "hashtags" (30 relevant hashtags as a string), "cta" (call to action line).
+No extra text, just JSON.`,
+          messages: [{ role: "user", content: `Write a full Instagram post for this idea:\nTitle: ${idea.title}\nHook: ${idea.hook}\nFormat: ${idea.format}\nNiche: ${acc.niche}\nPage: @${acc.nickname}` }]
+        })
+      });
+      const data = await res.json();
+      const text = data.content?.map(c => c.text || "").join("") || "{}";
+      const clean = text.replace(/```json|```/g, "").trim();
+      const post = JSON.parse(clean);
+      setGeneratedPost(post);
+    } catch {
+      setGeneratedPost({ caption: "Error generating post. Try again.", hashtags: "", cta: "" });
+    }
+    setGeneratingPost(false);
+  }
   const [fetchError, setFetchError] = useState({});
 
   function addAccount() {
@@ -513,8 +586,105 @@ Be concise, actionable, and motivating. User is anonymous and wants to grow fast
           )}
         </>}
 
+        {/* CREATOR STUDIO */}
+        {tab === 5 && <>
+          {igAccounts.length === 0 && (
+            <div style={{ color: "#475569", textAlign: "center", padding: 40, fontSize: 13 }}>
+              No Instagram accounts added yet. Go to 📊 Analytics → Add an Instagram account first!
+            </div>
+          )}
+
+          {igAccounts.map(acc => (
+            <div key={acc.id} style={{ background: "#0f0f1a", border: "1px solid #1e1e3a", borderRadius: 12, padding: 16, marginBottom: 16 }}>
+              {/* Account Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, color: "#e1306c", fontSize: 15 }}>📸 @{acc.nickname}</div>
+                <button onClick={() => generateIdeas(acc)} disabled={generatingIdeas[acc.id]}
+                  style={{ background: "#e1306c22", color: "#e1306c", border: "1px solid #e1306c44", borderRadius: 8, padding: "6px 14px", cursor: "pointer", fontWeight: 600, fontSize: 12, opacity: generatingIdeas[acc.id] ? 0.6 : 1 }}>
+                  {generatingIdeas[acc.id] ? "⏳ Generating..." : "🔄 Generate New Ideas"}
+                </button>
+              </div>
+
+              {/* Niche Selector */}
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Page Niche</div>
+                <select value={acc.niche || ""} onChange={e => { updateAccount(acc.id, "niche", e.target.value); }}
+                  style={{ ...s.bg, width: "auto", minWidth: 220 }}>
+                  <option value="">-- Select Niche --</option>
+                  {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+
+              {/* Today's Ideas */}
+              {generatingIdeas[acc.id] && (
+                <div style={{ color: "#a78bfa", fontSize: 13, padding: 12, textAlign: "center" }}>🤖 AI is generating today's post ideas...</div>
+              )}
+              {!generatingIdeas[acc.id] && postIdeas[acc.id]?.length > 0 && (
+                <>
+                  <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>📅 Today's 3 Post Ideas — {new Date().toDateString()}</div>
+                  {postIdeas[acc.id].map((idea, i) => (
+                    <div key={i} style={{ background: "#1a1a2e", border: "1px solid #2d2d5a", borderRadius: 10, padding: 12, marginBottom: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
+                            <span style={{ background: "#7c3aed22", color: "#a78bfa", borderRadius: 99, padding: "2px 8px", fontSize: 11, fontWeight: 700 }}>#{i + 1}</span>
+                            <span style={{ background: "#1e3a2a", color: "#10b981", borderRadius: 99, padding: "2px 8px", fontSize: 11 }}>{idea.format}</span>
+                          </div>
+                          <div style={{ fontWeight: 600, color: "#e2e8f0", marginBottom: 4 }}>{idea.title}</div>
+                          <div style={{ fontSize: 12, color: "#94a3b8", fontStyle: "italic" }}>Hook: "{idea.hook}"</div>
+                        </div>
+                        <button onClick={() => generatePost(acc, idea)}
+                          style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontWeight: 600, fontSize: 12, marginLeft: 10, whiteSpace: "nowrap" }}>
+                          ✍️ Write Post
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+              {!generatingIdeas[acc.id] && !postIdeas[acc.id]?.length && acc.niche && (
+                <div style={{ color: "#475569", fontSize: 13, textAlign: "center", padding: 16 }}>
+                  Click "🔄 Generate New Ideas" to get today's post ideas!
+                </div>
+              )}
+              {!acc.niche && (
+                <div style={{ color: "#f59e0b", fontSize: 13, padding: 8 }}>⚠️ Select a niche above to get AI post ideas!</div>
+              )}
+            </div>
+          ))}
+
+          {/* Generated Post Modal */}
+          {selectedIdea && (
+            <div style={{ background: "#0f0f1a", border: "1px solid #7c3aed", borderRadius: 12, padding: 20, marginTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, color: "#a78bfa" }}>✍️ Generated Post — {selectedIdea.idea.title}</div>
+                <button onClick={() => { setSelectedIdea(null); setGeneratedPost(null); }} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: 18 }}>✕</button>
+              </div>
+              {generatingPost && <div style={{ color: "#a78bfa", textAlign: "center", padding: 20 }}>🤖 Writing your post...</div>}
+              {generatedPost && !generatingPost && <>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>📝 CAPTION</div>
+                  <div style={{ background: "#1a1a2e", borderRadius: 8, padding: 12, fontSize: 13, lineHeight: 1.7, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{generatedPost.caption}</div>
+                  <button onClick={() => navigator.clipboard.writeText(generatedPost.caption)}
+                    style={{ marginTop: 6, background: "#1e1e3a", border: "1px solid #2d2d5a", color: "#94a3b8", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>📋 Copy Caption</button>
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>💬 CALL TO ACTION</div>
+                  <div style={{ background: "#1a1a2e", borderRadius: 8, padding: 10, fontSize: 13, color: "#10b981" }}>{generatedPost.cta}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6, fontWeight: 700 }}>🏷️ HASHTAGS</div>
+                  <div style={{ background: "#1a1a2e", borderRadius: 8, padding: 10, fontSize: 12, color: "#3b82f6", lineHeight: 1.8 }}>{generatedPost.hashtags}</div>
+                  <button onClick={() => navigator.clipboard.writeText(generatedPost.hashtags)}
+                    style={{ marginTop: 6, background: "#1e1e3a", border: "1px solid #2d2d5a", color: "#94a3b8", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}>📋 Copy Hashtags</button>
+                </div>
+              </>}
+            </div>
+          )}
+        </>}
+
         {/* AI ASSISTANT */}
-        {tab === 5 && (
+        {tab === 6 && (
           <div style={{ display: "flex", flexDirection: "column", height: "62vh" }}>
             <div ref={chatRef} style={{ flex: 1, overflowY: "auto", marginBottom: 12, display: "flex", flexDirection: "column", gap: 10 }}>
               {aiMessages.map((m, i) => (
