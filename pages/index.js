@@ -35,10 +35,13 @@ export default function Home() {
   const { data: session, status } = useSession();
   const [tab, setTab] = useState(0);
   const [state, setState] = useState(defaultState);
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | saving | saved | error
+  const [loaded, setLoaded] = useState(false);
   const [newTask, setNewTask] = useState("");
   const [newLead, setNewLead] = useState({ name: "", value: "", status: "Contacted" });
   const [newAccount, setNewAccount] = useState({ platform: "instagram", nickname: "" });
-  const [fetchingId, setFetchingId] = useState(null); // FIX 1: was missing
+  const [fetchingId, setFetchingId] = useState(null);
   const [fetchError, setFetchError] = useState({});
   const [postIdeas, setPostIdeas] = useState({});
   const [generatingIdeas, setGeneratingIdeas] = useState({});
@@ -52,29 +55,52 @@ export default function Home() {
   const [aiInput, setAiInput] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const chatRef = useRef(null);
+  const saveTimer = useRef(null);
 
-  // Load from localStorage
+  // Load from cloud on login
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("p20l");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        setState(s => ({
-          ...s, ...parsed,
-          analytics: {
-            ...defaultState.analytics,
-            ...parsed.analytics,
-            accounts: parsed.analytics?.accounts || [],
-          }
-        }));
+    if (!session) return;
+    async function loadData() {
+      setSyncing(true);
+      try {
+        const res = await fetch("/api/data");
+        const { data } = await res.json();
+        if (data) {
+          setState(s => ({
+            ...s, ...data,
+            analytics: {
+              ...defaultState.analytics,
+              ...data.analytics,
+              accounts: data.analytics?.accounts || [],
+            }
+          }));
+        }
+      } catch { console.error("Failed to load data"); }
+      setSyncing(false);
+      setLoaded(true);
+    }
+    loadData();
+  }, [session]);
+
+  // Auto-save to cloud with debounce (saves 2s after last change)
+  useEffect(() => {
+    if (!loaded) return;
+    setSyncStatus("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await fetch("/api/data", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(state),
+        });
+        setSyncStatus("saved");
+        setTimeout(() => setSyncStatus("idle"), 2000);
+      } catch {
+        setSyncStatus("error");
       }
-    } catch {}
-  }, []);
-
-  // Save to localStorage
-  useEffect(() => {
-    localStorage.setItem("p20l", JSON.stringify(state));
-  }, [state]);
+    }, 2000);
+  }, [state, loaded]);
 
   useEffect(() => {
     if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight;
@@ -93,7 +119,6 @@ export default function Home() {
   const due = finance.earned - finance.paid;
   const monthsLeft = Math.max(1, 12 - new Date().getMonth());
 
-  // FIX 3: defined before useEffect using useCallback
   const generateIdeas = useCallback(async (acc, auto = false) => {
     if (!acc.niche) return;
     setGeneratingIdeas(g => ({ ...g, [acc.id]: true }));
@@ -104,12 +129,10 @@ export default function Home() {
         body: JSON.stringify({
           context: `You are a viral Instagram content strategist. Generate exactly 3 unique, trending post ideas for today for a ${acc.niche} niche Instagram page. Return ONLY a JSON array with 3 objects, each having: "title" (5-7 words), "hook" (first line that stops scroll), "format" (Reel/Carousel/Quote/Infographic). No extra text, no markdown, just the JSON array.`,
           messages: [{ role: "user", content: `Generate 3 fresh Instagram post ideas for ${new Date().toDateString()} for a ${acc.niche} page called @${acc.nickname}.` }],
-          raw: true,
         })
       });
       const data = await res.json();
-      const text = data.reply || "[]";
-      const clean = text.replace(/```json|```/g, "").trim();
+      const clean = (data.reply || "[]").replace(/```json|```/g, "").trim();
       const ideas = JSON.parse(clean);
       setPostIdeas(p => ({ ...p, [acc.id]: ideas }));
       if (auto) setLastIdeaDate(d => ({ ...d, [acc.id]: new Date().toDateString() }));
@@ -119,7 +142,6 @@ export default function Home() {
     setGeneratingIdeas(g => ({ ...g, [acc.id]: false }));
   }, []);
 
-  // Auto-generate ideas on load
   useEffect(() => {
     if (!igAccounts.length) return;
     const today = new Date().toDateString();
@@ -139,7 +161,6 @@ export default function Home() {
         body: JSON.stringify({
           context: `You are a viral Instagram content writer. Write a complete Instagram post for a ${acc.niche} page. Return ONLY a JSON object with: "caption" (full caption with emojis, max 300 words), "hashtags" (30 relevant hashtags as a string), "cta" (call to action line). No extra text, just JSON.`,
           messages: [{ role: "user", content: `Write a full Instagram post:\nTitle: ${idea.title}\nHook: ${idea.hook}\nFormat: ${idea.format}\nNiche: ${acc.niche}\nPage: @${acc.nickname}` }],
-          raw: true,
         })
       });
       const data = await res.json();
@@ -199,12 +220,9 @@ export default function Home() {
     setAiMessages(newMessages);
     setAiLoading(true);
     try {
-      // FIX 2: use accounts array instead of deleted analytics.instagram/youtube
-      const igTotal = totalFollowers("instagram");
-      const ytTotal = totalFollowers("youtube");
       const context = `You are a private AI business assistant for an anonymous creator targeting ₹20 Lakh this year.
 Stats: Earned ₹${finance.earned}, Paid ₹${finance.paid}, Left ₹${left}.
-Instagram total followers: ${igTotal}. YouTube total subscribers: ${ytTotal}.
+Instagram total followers: ${totalFollowers("instagram")}. YouTube total subscribers: ${totalFollowers("youtube")}.
 LinkedIn followers: ${analytics.linkedin?.followers || 0}. Facebook followers: ${analytics.facebook?.followers || 0}.
 Active leads: ${leads.filter(l => l.status !== "Lost").length}. Tasks today: ${tasks.length}.
 Be concise, actionable, and motivating.`;
@@ -239,8 +257,14 @@ Be concise, actionable, and motivating.`;
   const statuses = ["Contacted", "Negotiating", "Closed", "Lost"];
   const statusColor = { Contacted: "#3b82f6", Negotiating: "#f59e0b", Closed: "#10b981", Lost: "#ef4444" };
 
-  if (status === "loading") return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0a0f", color: "#a78bfa", fontSize: 18 }}>Loading...</div>
+  const syncDot = { idle: null, saving: "⏳", saved: "✅", error: "❌" }[syncStatus];
+
+  if (status === "loading" || (session && !loaded)) return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: "#0a0a0f", color: "#a78bfa", fontSize: 18, gap: 12 }}>
+      <div style={{ fontSize: 40 }}>⚡</div>
+      <div>Loading your dashboard...</div>
+      <div style={{ fontSize: 13, color: "#475569" }}>Syncing from cloud</div>
+    </div>
   );
 
   if (!session) return (
@@ -251,10 +275,8 @@ Be concise, actionable, and motivating.`;
       <button onClick={() => signIn("google", { callbackUrl: "https://project-20l.vercel.app" })} style={{ background: "#7c3aed", color: "#fff", border: "none", borderRadius: 12, padding: "14px 32px", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
         🔐 Sign in with Google
       </button>
-      <div style={{ color: "#475569", fontSize: 12, marginTop: 12 }}>
-        📱 On mobile? Open in <strong style={{color:"#a78bfa"}}>Chrome</strong> or <strong style={{color:"#a78bfa"}}>Safari</strong> for best experience
-      </div>
-      <div style={{ color: "#334155", fontSize: 12, marginTop: 16 }}>Only your account can access this</div>
+      <div style={{ color: "#475569", fontSize: 12, marginTop: 12 }}>📱 On mobile? Open in <strong style={{ color: "#a78bfa" }}>Chrome</strong> or <strong style={{ color: "#a78bfa" }}>Safari</strong></div>
+      <div style={{ color: "#334155", fontSize: 12, marginTop: 8 }}>Only your account can access this</div>
     </div>
   );
 
@@ -267,6 +289,7 @@ Be concise, actionable, and motivating.`;
           <div style={{ fontSize: 11, color: "#64748b" }}>Anonymous Mode • {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "short" })}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {syncDot && <div style={{ fontSize: 11, color: "#64748b" }}>{syncDot} {syncStatus === "saving" ? "Saving..." : syncStatus === "saved" ? "Saved" : "Sync error"}</div>}
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 11, color: "#94a3b8" }}>Goal Progress</div>
             <div style={{ fontSize: 20, fontWeight: 800, color: "#a78bfa" }}>{pct}%</div>
